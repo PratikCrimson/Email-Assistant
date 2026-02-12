@@ -18,7 +18,7 @@ ai-email-assistant/
 │   │   │   └── cleaner.py       # strip HTML, signatures, replies
 │   │   │
 │   │   ├── indexing/
-│   │   │   ├── initial_sync.py  # fetch first 100 emails
+│   │   │   ├── initial_sync.py  # fetch first 10 emails
 │   │   │   ├── background.py    # older inbox indexing
 │   │   │   └── incremental.py   # new email sync
 │   │   │

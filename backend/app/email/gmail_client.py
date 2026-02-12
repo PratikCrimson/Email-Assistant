@@ -6,7 +6,7 @@ def get_email_service(credentials):
 
 
 
-def fetch_latest_emails(service, max_results=100):
+def fetch_latest_emails(service, max_results=10):
     results = service.users().messages().list(
         userId="me",
         maxResults=max_results,
