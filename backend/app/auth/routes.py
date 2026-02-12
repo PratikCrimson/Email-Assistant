@@ -7,13 +7,15 @@ from app.auth.google_oauth import get_google_oauth_flow, get_user_email
 from app.email.gmail_client import  fetch_latest_emails, fetch_email_detail , get_email_service
 from app.email.parser import extract_email_feilds
 from app.indexing.background import run_background_indexing
+from app.indexing.state import INDEX_STATE
+from app.db.sqlite import get_conn
 
 router = APIRouter()
 
 TOKEN_STORAGE = {}
 
 @router.get("/emails/test")
-def fetch_emails_test():
+def fetch_emailS_test_and_trigger_bg():
     if not TOKEN_STORAGE:
         return {"error" : "no users is logged in yet"}
     
@@ -31,17 +33,26 @@ def fetch_emails_test():
     )
 
     service = get_email_service(credentials)
-    messages = fetch_latest_emails(service)
 
-    emails =[]
+    messages = fetch_latest_emails(service)
+    emails = []
+
     for msg in messages:
-        detail = fetch_email_detail(service, msg["id"])
+        detail = fetch_email_detail(service , msg["id"])
         parsed = extract_email_feilds(detail)
         emails.append(parsed)
-    
-    return {"count" : len(emails), "emails" : emails}
 
-@router.post("/ ")
+    if not INDEX_STATE["running"]:
+        INDEX_STATE["running"] = True
+
+        threading.Thread(
+            target=run_background_indexing,
+            args=(credentials, 10),
+            daemon=True
+        ).start()
+    return {"preview" : emails, "background_indexing" : "started"}
+
+@router.post("/index/start")
 def start_background_indexing():
     if not TOKEN_STORAGE:
         return {"error" : "no users is logged in yet"}
@@ -68,7 +79,22 @@ def start_background_indexing():
     thread.start()
 
     return {"status" : "started" , "message" : "Background indexing started"}
-    
+
+
+@router.get("/emails/list")
+def list_indexed_emails(limit: int = 20):
+    conn = get_conn()
+    cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT email_id, subject, sender, date, substr(cleaned_body, 1, 200) AS preview
+        FROM emails
+        ORDER BY indexed_at DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    conn.close()
+    return {"count": len(rows), "emails": [dict(r) for r in rows]}
+
 
 @router.get("/login")
 def login():

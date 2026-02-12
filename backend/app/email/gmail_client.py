@@ -6,10 +6,17 @@ def get_email_service(credentials):
 
 
 
-def fetch_latest_emails(service, max_results=10):
+def fetch_latest_emails(service, max_results=10 ,after_ts = None):
+
+    q = None
+
+    if after_ts:
+        q = f"after:{after_ts}" # unix timestamp in milliseconds
+
     results = service.users().messages().list(
         userId="me",
         maxResults=max_results,
+        q=q
     ).execute()
     messages = results.get("messages" ,[])
     return messages
