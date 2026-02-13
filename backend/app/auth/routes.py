@@ -128,3 +128,6 @@ def google_callback(request: Request):
         "email": email
     })
 
+@router.get("/index/status")
+def get_index_status():
+    return INDEX_STATE

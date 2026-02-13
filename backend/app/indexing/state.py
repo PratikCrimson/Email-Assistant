@@ -1,6 +1,10 @@
 
 INDEX_STATE = {
-    "running" : False
+    "running" : False,
+    "total" : 0,
+    "processed" : 0,
+    "started_at" : None,
+    "finished_at" : None,
 }
 
 from app.db.sqlite import get_conn

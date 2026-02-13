@@ -23,7 +23,7 @@ def init_db():
             cleaned_body TEXT,
             indexed_at TEXT
         )
-    """)
+    """)Ptheme
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sync_state (
             id INTEGER PRIMARY KEY ,
@@ -34,3 +34,15 @@ def init_db():
     cur.execute("INSERT OR IGNORE INTO sync_state (id, last_synced_at) VALUES (1, NULL)")
     conn.commit()
     conn.close()
+
+def ensure_category_column():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE emails ADD COLUMN category TEXT")
+        conn.commit()
+        print("✅ category column added")
+    except Exception:
+        print("ℹ️ category column already exists")
+    finally:
+        conn.close()
