@@ -2,16 +2,18 @@ import time
 from app.email.gmail_client import get_email_service, fetch_latest_emails, fetch_email_detail
 from app.email.parser import extract_email_feilds
 from app.email.cleaner import clean_email_text
-from app.db.sqlite import get_conn
 from datetime import datetime
 from app.indexing.state import get_last_synced_at
 from app.indexing.state import update_last_synced_at
 from app.indexing.state import INDEX_STATE 
 from app.email.categorizer import categorize_email
+from app.db.postgress import SessionLocal
+from app.db.models import Email
+from sqlalchemy.exc import IntegrityError
+from app.ai.embeddings import embed_text
+from app.email.date_parser import parse_email_date
 
-
-
-def run_background_indexing(credentials, max_results=100):
+def run_background_indexing(credentials, user_email: str, max_results=50):
     try:
         INDEX_STATE["running"] = True
         INDEX_STATE["started_at"] = datetime.utcnow().isoformat()
@@ -24,6 +26,8 @@ def run_background_indexing(credentials, max_results=100):
         INDEX_STATE["total"] = len(messages)
         print(f"🔄 Starting background indexing: {INDEX_STATE['total']} emails")
 
+        db = SessionLocal()
+
         for i, msg in enumerate(messages, start=1):
             detail = fetch_email_detail(service, msg["id"])
             parsed = extract_email_feilds(detail)
@@ -34,30 +38,35 @@ def run_background_indexing(credentials, max_results=100):
             category = categorize_email(f"{parsed.get('subject')} {clean_body}")
             print(f"🏷 Category: {category} | Subject: {parsed.get('subject')}")
 
+            embedding = embed_text(clean_body)
 
-            save_email(parsed, clean_body, msg["id"], msg.get("threadId"), category)
+            parsed_date = parse_email_date(parsed.get("date"))
+
+            email = Email(
+                user_email=user_email,
+                email_id=msg["id"],
+                thread_id=msg.get("threadId"),
+                subject=parsed.get("subject"),
+                sender=parsed.get("sender"),
+                date=parsed_date,
+                cleaned_body=clean_body,
+                category=category,  
+                embedding=embedding,
+            )
+
+            try:
+                db.add(email)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                print(f"Error saving email: {e}")
 
             INDEX_STATE["processed"] = i
-
             print(f"✅ {i}/{INDEX_STATE['total']} | {parsed.get('subject')}")
-
             time.sleep(0.1)
-
     except Exception as e:
         print("❌ Background indexing crashed:", e)
-
     finally:
         INDEX_STATE["running"] = False
         INDEX_STATE["finished_at"] = datetime.utcnow().isoformat()
         print("🏁 Background indexing finished")
-
-def save_email(parsed , clean_body , email_id , thread_id, category):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT OR IGNORE INTO emails (email_id, thread_id, subject, sender, date, cleaned_body,category, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (email_id, thread_id, parsed.get("subject"), parsed.get("sender"), parsed.get("date"), clean_body, category, datetime.utcnow().isoformat()))
-    conn.commit()
-    conn.close()
