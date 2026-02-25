@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: email_assistant_db
+    environment:
+      POSTGRES_DB: email_assistant
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: DockerFile
+    container_name: email_assistant_api
+    depends_on:
+      - db
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override DATABASE_URL from .env so the API uses the db container host
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/email_assistant
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:
+

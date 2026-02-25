@@ -1,4 +1,5 @@
 import threading
+from datetime import datetime
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 from app.auth.google_oauth import get_google_oauth_flow, get_user_email
@@ -107,7 +108,15 @@ def start_background_indexing():
 
 
 @router.get("/search")
-def semantic_search(q: str, category: str | None = None, limit: int = 5, user=Depends(get_current_user)):
+def semantic_search(
+    q: str,
+    category: str | None = None,
+    limit: int = 5,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    from_sender: str | None = None,
+    user=Depends(get_current_user),
+):
     db = SessionLocal()
     try:
         query_embedding = embed_text(q)
@@ -118,9 +127,14 @@ def semantic_search(q: str, category: str | None = None, limit: int = 5, user=De
         FROM emails
         WHERE user_email = :user_email
           AND (:category IS NULL OR category = :category)
+          AND (:start_date IS NULL OR date >= :start_date)
+          AND (:end_date IS NULL OR date <= :end_date)
+          AND (:from_sender IS NULL OR sender ILIKE :from_sender)
         ORDER BY embedding <-> CAST(:query_embedding AS vector)
         LIMIT :limit
         """)
+
+        from_sender_filter = f"%{from_sender}%" if from_sender else None
 
         results = db.execute(
             sql,
@@ -129,6 +143,9 @@ def semantic_search(q: str, category: str | None = None, limit: int = 5, user=De
                 "category": category,
                 "limit": limit,
                 "user_email": user.email,
+                "start_date": start_date,
+                "end_date": end_date,
+                "from_sender": from_sender_filter,
             }
         ).fetchall()
 
@@ -154,7 +171,37 @@ def semantic_search(q: str, category: str | None = None, limit: int = 5, user=De
 
 @router.post("/ask")
 def ask_rag(payload: dict, user=Depends(get_current_user)):
-    return {"answer": rag_answer(user_email=user.email, query=payload["query"])}
+    """
+    Payload shape:
+    {
+        "query": "...",                      # required
+        "start_date": "2024-01-01T00:00:00", # optional ISO-8601
+        "end_date": "2024-12-31T23:59:59",   # optional ISO-8601
+        "from_sender": "foo@bar.com",        # optional
+        "category": "hr"                     # optional
+    }
+    """
+
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+    start_date = _parse_iso_datetime(payload.get("start_date"))
+    end_date = _parse_iso_datetime(payload.get("end_date"))
+
+    answer = rag_answer(
+        user_email=user.email,
+        query=payload["query"],
+        start_date=start_date,
+        end_date=end_date,
+        from_sender=payload.get("from_sender"),
+        category=payload.get("category"),
+    )
+    return {"answer": answer}
 
 
 @router.get("/login")

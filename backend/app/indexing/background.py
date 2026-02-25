@@ -44,14 +44,27 @@ def run_background_indexing(credentials, user_email: str, max_results=50):
             detail = fetch_email_detail(service, msg["id"])
             parsed = extract_email_feilds(detail)
 
+            subject = parsed.get("subject")
+            sender = parsed.get("sender")
+            date_str = parsed.get("date")
+
             raw_body = parsed.get("body", "")
             clean_body = clean_email_text(raw_body)
 
-            category = categorize_email(f"{parsed.get('subject')} {clean_body}")
-            print(f"🏷 Category: {category} | Subject: {parsed.get('subject')}")
+            category = categorize_email(f"{subject or ''} {clean_body}")
+            print(f"🏷 Category: {category} | Subject: {subject}")
 
-            embedding = embed_text(clean_body)
-            parsed_date = parse_email_date(parsed.get("date"))
+            # Build richer text for embeddings so that subject, sender, date and
+            # category also influence similarity.
+            embedding_text = (
+                f"Subject: {subject or ''}\n"
+                f"From: {sender or ''}\n"
+                f"Date: {date_str or ''}\n"
+                f"Category: {category or ''}\n"
+                f"Body: {clean_body}"
+            )
+            embedding = embed_text(embedding_text)
+            parsed_date = parse_email_date(date_str)
 
             email_row = Email(
                 user_email=user_email,
