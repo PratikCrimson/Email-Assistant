@@ -1,106 +1,108 @@
+import os
 import threading
 from datetime import datetime
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from app.auth.google_oauth import get_google_oauth_flow, get_user_email
 from app.email.gmail_client import fetch_latest_emails, fetch_email_detail, get_email_service
 from app.email.parser import extract_email_feilds
 from app.indexing.background import run_background_indexing
-from app.indexing.state import INDEX_STATE
+from app.indexing.state import get_user_index_status, is_user_indexing_running
 from app.ai.embeddings import embed_text
 from app.db.postgress import SessionLocal
 from sqlalchemy import text
 from app.auth.deps import get_current_user
 from app.rag.service import rag_answer
+from app.core.security import (
+    SESSION_COOKIE_NAME,
+    SESSION_TTL_SECONDS,
+    create_session_token,
+)
 
 router = APIRouter()
 
 
 @router.get("/emails/test")
-def fetch_emails_test_and_trigger_bg():
-    from app.db.models import UserToken
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-
-    db = SessionLocal()
-    token_row = db.query(UserToken).first()
-    db.close()
-
-    if not token_row:
-        return {"error": "no users logged in yet"}
-
-    credentials = Credentials(
-        token=token_row.access_token,
-        refresh_token=token_row.refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=None,
-        client_secret=None,
-        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
-    )
-
-    if credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
-        db = SessionLocal()
-        token_row = db.query(UserToken).filter(UserToken.user_email == token_row.user_email).first()
-        token_row.access_token = credentials.token
-        token_row.expiry = credentials.expiry
-        db.commit()
-        db.close()
+def fetch_emails_test_and_trigger_bg(user=Depends(get_current_user)):
+    credentials = _load_user_credentials(user.email)
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not logged in",
+        )
 
     service = get_email_service(credentials)
-
     messages = fetch_latest_emails(service, max_results=10)
     emails = []
 
     for msg in messages:
         detail = fetch_email_detail(service, msg["id"])
         parsed = extract_email_feilds(detail)
+        parsed["email_id"] = msg["id"]
         emails.append(parsed)
 
-    if not INDEX_STATE["running"]:
+    if not is_user_indexing_running(user.email):
         threading.Thread(
             target=run_background_indexing,
-            args=(credentials, token_row.user_email, 50),
+            args=(credentials, user.email),
             daemon=True
         ).start()
 
     return {"preview": emails, "background_indexing": "started"}
 
 
-@router.post("/index/start")
-def start_background_indexing():
+def _load_user_credentials(user_email: str):
     from app.db.models import UserToken
     from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
+    from google.auth.transport.requests import Request as GoogleRequest
+
+    oauth_flow = get_google_oauth_flow()
+    client_id = oauth_flow.client_config.get("client_id")
+    client_secret = oauth_flow.client_config.get("client_secret")
 
     db = SessionLocal()
-    token_row = db.query(UserToken).first()
-    db.close()
+    try:
+        token_row = db.query(UserToken).filter(UserToken.user_email == user_email).first()
+        if not token_row:
+            return None
 
-    if not token_row:
-        return {"error": "no users logged in yet"}
+        credentials = Credentials(
+            token=token_row.access_token,
+            refresh_token=token_row.refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        )
 
-    credentials = Credentials(
-        token=token_row.access_token,
-        refresh_token=token_row.refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=None,
-        client_secret=None,
-        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
-    )
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(GoogleRequest())
+            token_row.access_token = credentials.token
+            token_row.expiry = credentials.expiry
+            if credentials.refresh_token:
+                token_row.refresh_token = credentials.refresh_token
+            db.commit()
 
-    if credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
-        db = SessionLocal()
-        token_row = db.query(UserToken).filter(UserToken.user_email == token_row.user_email).first()
-        token_row.access_token = credentials.token
-        token_row.expiry = credentials.expiry
-        db.commit()
+        return credentials
+    finally:
         db.close()
+
+
+@router.post("/index/start")
+def start_background_indexing(user=Depends(get_current_user)):
+    credentials = _load_user_credentials(user.email)
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not logged in",
+        )
+
+    if is_user_indexing_running(user.email):
+        return {"status": "running", "message": "Background indexing already in progress"}
 
     threading.Thread(
         target=run_background_indexing,
-        args=(credentials, token_row.user_email, 50),
+        args=(credentials, user.email),
         daemon=True,
     ).start()
 
@@ -243,9 +245,21 @@ def google_callback(request: Request):
     finally:
         db.close()
 
-    return JSONResponse({"message": "Logged in successfully", "email": email})
+    session_token = create_session_token(email)
+    frontend_base = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    response = RedirectResponse(url=f"{frontend_base}/dashboard/emails")
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        max_age=SESSION_TTL_SECONDS,
+        samesite="lax",
+        secure=os.getenv("COOKIE_SECURE", "false").lower() == "true",
+        path="/",
+    )
+    return response
 
 
 @router.get("/index/status")
-def get_index_status():
-    return INDEX_STATE
+def get_index_status(user=Depends(get_current_user)):
+    return get_user_index_status(user.email)

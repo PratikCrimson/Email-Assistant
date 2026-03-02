@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Text, TIMESTAMP, UniqueConstraint, DateTime, String
+from sqlalchemy import Column, Integer, Text, TIMESTAMP, UniqueConstraint, DateTime, String, Boolean
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -33,5 +33,23 @@ class UserToken(Base):
     access_token = Column(String, nullable=False)
     refresh_token = Column(String, nullable=True)
     expiry = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class UserSyncState(Base):
+    __tablename__ = "user_sync_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_email = Column(String, unique=True, index=True, nullable=False)
+    running = Column(Boolean, nullable=False, default=False)
+    total = Column(Integer, nullable=False, default=0)
+    processed = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    sync_after_ts = Column(DateTime, nullable=True)
+    next_page_token = Column(Text, nullable=True)
+    has_more = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
