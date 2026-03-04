@@ -20,6 +20,39 @@ from app.core.security import (
 )
 
 router = APIRouter()
+VALID_CATEGORIES = {"job", "finance", "hr", "promotions", "security", "other"}
+
+
+def _normalize_category(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized or normalized == "all":
+        return None
+    if normalized in VALID_CATEGORIES:
+        return normalized
+    return None
+
+
+def _parse_iso_datetime(value: str | None, *, end_of_day: bool = False) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+    # For date-only inputs (YYYY-MM-DD), make end_date inclusive.
+    if len(raw) == 10 and end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return dt
 
 
 @router.get("/emails/test")
@@ -121,18 +154,20 @@ def semantic_search(
 ):
     db = SessionLocal()
     try:
+        category = _normalize_category(category)
+        from_sender = from_sender.strip() if from_sender else None
         query_embedding = embed_text(q)
 
         sql = text("""
         SELECT email_id, subject, sender, date, category, cleaned_body,
-               embedding <-> CAST(:query_embedding AS vector) AS distance
+        embedding <=> CAST(:query_embedding AS vector) AS distance
         FROM emails
         WHERE user_email = :user_email
           AND (:category IS NULL OR category = :category)
           AND (:start_date IS NULL OR date >= :start_date)
           AND (:end_date IS NULL OR date <= :end_date)
           AND (:from_sender IS NULL OR sender ILIKE :from_sender)
-        ORDER BY embedding <-> CAST(:query_embedding AS vector)
+        ORDER BY embedding <=> CAST(:query_embedding AS vector)
         LIMIT :limit
         """)
 
@@ -184,25 +219,44 @@ def ask_rag(payload: dict, user=Depends(get_current_user)):
     }
     """
 
-    def _parse_iso_datetime(value: str | None) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(value)
-        except Exception:
-            return None
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid payload",
+        )
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="query is required",
+        )
 
-    start_date = _parse_iso_datetime(payload.get("start_date"))
-    end_date = _parse_iso_datetime(payload.get("end_date"))
+    start_date = _parse_iso_datetime(payload.get("start_date"), end_of_day=False)
+    end_date = _parse_iso_datetime(payload.get("end_date"), end_of_day=True)
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="start_date cannot be after end_date",
+        )
+    category = _normalize_category(payload.get("category"))
+    from_sender = payload.get("from_sender")
+    from_sender = from_sender.strip() if isinstance(from_sender, str) else None
 
-    answer = rag_answer(
-        user_email=user.email,
-        query=payload["query"],
-        start_date=start_date,
-        end_date=end_date,
-        from_sender=payload.get("from_sender"),
-        category=payload.get("category"),
-    )
+    try:
+        answer = rag_answer(
+            user_email=user.email,
+            query=query.strip(),
+            start_date=start_date,
+            end_date=end_date,
+            from_sender=from_sender,
+            category=category,
+        )
+    except Exception as e:
+        print(f"❌ ask_rag failed for {user.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ask pipeline failed: {e}",
+        )
     return {"answer": answer}
 
 

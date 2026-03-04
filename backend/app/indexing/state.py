@@ -1,5 +1,16 @@
 from app.db.models import UserSyncState
 from app.db.postgress import SessionLocal
+from datetime import timezone
+
+
+def _to_utc_iso(value):
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _serialize_sync_state(row: UserSyncState) -> dict:
@@ -7,9 +18,9 @@ def _serialize_sync_state(row: UserSyncState) -> dict:
         "running": bool(row.running),
         "total": int(row.total or 0),
         "processed": int(row.processed or 0),
-        "started_at": row.started_at.isoformat() if row.started_at else None,
-        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+        "started_at": _to_utc_iso(row.started_at),
+        "finished_at": _to_utc_iso(row.finished_at),
+        "last_synced_at": _to_utc_iso(row.last_synced_at),
         "has_more": bool(row.has_more),
     }
 

@@ -1,11 +1,12 @@
 import React, { useState } from 'react'
 import { format } from 'date-fns'
-import { Search, AlertCircle, Inbox } from 'lucide-react'
+import { Search, AlertCircle, Inbox, SlidersHorizontal } from 'lucide-react'
 import { semanticSearch } from '@/lib/api'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import EmailDetailModal from '@/components/EmailDetailModal'
 
 function ResultCard({ result, onClick }) {
@@ -41,20 +42,59 @@ function ResultCard({ result, onClick }) {
     )
 }
 
+const CATEGORY_OPTIONS = [
+    { value: 'all', label: 'All categories' },
+    { value: 'job', label: 'Job' },
+    { value: 'finance', label: 'Finance' },
+    { value: 'hr', label: 'HR' },
+    { value: 'promotions', label: 'Promotions' },
+    { value: 'security', label: 'Security' },
+    { value: 'other', label: 'Other' },
+]
+
+function categoryLabel(value) {
+    const found = CATEGORY_OPTIONS.find((opt) => opt.value === value)
+    return found ? found.label : value
+}
+
 export default function SearchPage() {
     const [query, setQuery] = useState('')
     const [results, setResults] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
     const [selected, setSelected] = useState(null)
+    const [showFilters, setShowFilters] = useState(false)
+    const [filterCategory, setFilterCategory] = useState('all')
+    const [filterSender, setFilterSender] = useState('')
+    const [filterStartDate, setFilterStartDate] = useState('')
+    const [filterEndDate, setFilterEndDate] = useState('')
+    const [filterError, setFilterError] = useState('')
+
+    const activeFilters = []
+    if (filterCategory !== 'all') activeFilters.push(`Category: ${categoryLabel(filterCategory)}`)
+    if (filterSender.trim()) activeFilters.push(`Sender: ${filterSender.trim()}`)
+    if (filterStartDate) activeFilters.push(`From: ${filterStartDate}`)
+    if (filterEndDate) activeFilters.push(`To: ${filterEndDate}`)
 
     const handleSearch = async (e) => {
         e?.preventDefault()
         if (!query.trim()) return
+        if (filterStartDate && filterEndDate && filterStartDate > filterEndDate) {
+            setFilterError('Start date cannot be after end date.')
+            return
+        }
+        setFilterError('')
+
+        const params = { q: query, limit: 10 }
+        if (filterCategory !== 'all') params.category = filterCategory
+        if (filterSender.trim()) params.from_sender = filterSender.trim()
+        if (filterStartDate) params.start_date = `${filterStartDate}T00:00:00`
+        if (filterEndDate) params.end_date = `${filterEndDate}T23:59:59`
+
         setLoading(true)
         setError(null)
         try {
-            const { data } = await semanticSearch({ q: query, limit: 10 })
+            const { data } = await semanticSearch(params)
             setResults(data.results || [])
         } catch (err) {
             setError(err?.response?.data?.detail || 'Search failed. Is the backend running?')
@@ -88,6 +128,91 @@ export default function SearchPage() {
                     Search
                 </Button>
             </form>
+
+            <div className="mb-6">
+                <div className="flex items-center gap-2 mb-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowFilters((v) => !v)}
+                    >
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                        Filters
+                    </Button>
+                    {(filterCategory !== 'all' || filterSender || filterStartDate || filterEndDate) && (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                                setFilterCategory('all')
+                                setFilterSender('')
+                                setFilterStartDate('')
+                                setFilterEndDate('')
+                                setFilterError('')
+                            }}
+                        >
+                            Clear
+                        </Button>
+                    )}
+                </div>
+
+                {showFilters && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        <Select value={filterCategory} onValueChange={setFilterCategory}>
+                            <SelectTrigger id="search-filter-category">
+                                <SelectValue placeholder="Category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {CATEGORY_OPTIONS.map((opt) => (
+                                    <SelectItem key={opt.value} value={opt.value}>
+                                        {opt.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+
+                        <Input
+                            id="search-filter-sender"
+                            value={filterSender}
+                            onChange={(e) => setFilterSender(e.target.value)}
+                            placeholder="Sender (email/name)"
+                        />
+
+                        <Input
+                            id="search-filter-start-date"
+                            type="date"
+                            value={filterStartDate}
+                            onChange={(e) => setFilterStartDate(e.target.value)}
+                        />
+
+                        <Input
+                            id="search-filter-end-date"
+                            type="date"
+                            value={filterEndDate}
+                            onChange={(e) => setFilterEndDate(e.target.value)}
+                        />
+                    </div>
+                )}
+
+                {filterError && (
+                    <p className="mt-2 text-xs text-[hsl(var(--destructive))]">{filterError}</p>
+                )}
+
+                {activeFilters.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                        {activeFilters.map((chip) => (
+                            <span
+                                key={chip}
+                                className="inline-flex items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] px-2 py-1 text-[11px] text-[hsl(var(--muted-foreground))]"
+                            >
+                                {chip}
+                            </span>
+                        ))}
+                    </div>
+                )}
+            </div>
 
             {loading && (
                 <div className="flex flex-col items-center justify-center py-24 gap-4">

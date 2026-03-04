@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Sparkles } from 'lucide-react'
+import { Send, Bot, User, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { askRag } from '@/lib/api'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
 const SUGGESTIONS = [
@@ -13,8 +14,24 @@ const SUGGESTIONS = [
     'Any promotional offers expiring soon?',
 ]
 
+const CATEGORY_OPTIONS = [
+    { value: 'all', label: 'All categories' },
+    { value: 'job', label: 'Job' },
+    { value: 'finance', label: 'Finance' },
+    { value: 'hr', label: 'HR' },
+    { value: 'promotions', label: 'Promotions' },
+    { value: 'security', label: 'Security' },
+    { value: 'other', label: 'Other' },
+]
+
+function categoryLabel(value) {
+    const found = CATEGORY_OPTIONS.find((opt) => opt.value === value)
+    return found ? found.label : value
+}
+
 function Message({ role, content }) {
     const isUser = role === 'user'
+    const isLongAssistantMessage = !isUser && (content || '').length > 700
     return (
         <div className={cn('flex gap-3 animate-message', isUser ? 'flex-row-reverse' : 'flex-row')}>
             <div
@@ -29,7 +46,8 @@ function Message({ role, content }) {
             </div>
             <div
                 className={cn(
-                    'max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
+                    'max-w-[min(82%,860px)] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
+                    isLongAssistantMessage && 'max-h-[46vh] overflow-y-auto',
                     isUser
                         ? 'bg-[hsl(var(--foreground))] text-[hsl(var(--background))] rounded-tr-sm'
                         : 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] text-[hsl(var(--foreground))] rounded-tl-sm'
@@ -60,7 +78,19 @@ export default function AskPage() {
     const [messages, setMessages] = useState([])
     const [input, setInput] = useState('')
     const [loading, setLoading] = useState(false)
+    const [showFilters, setShowFilters] = useState(false)
+    const [filterCategory, setFilterCategory] = useState('all')
+    const [filterSender, setFilterSender] = useState('')
+    const [filterStartDate, setFilterStartDate] = useState('')
+    const [filterEndDate, setFilterEndDate] = useState('')
+    const [filterError, setFilterError] = useState('')
     const bottomRef = useRef(null)
+
+    const activeFilters = []
+    if (filterCategory !== 'all') activeFilters.push(`Category: ${categoryLabel(filterCategory)}`)
+    if (filterSender.trim()) activeFilters.push(`Sender: ${filterSender.trim()}`)
+    if (filterStartDate) activeFilters.push(`From: ${filterStartDate}`)
+    if (filterEndDate) activeFilters.push(`To: ${filterEndDate}`)
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -69,11 +99,23 @@ export default function AskPage() {
     const send = async (text) => {
         const q = (text || input).trim()
         if (!q || loading) return
+        if (filterStartDate && filterEndDate && filterStartDate > filterEndDate) {
+            setFilterError('Start date cannot be after end date.')
+            return
+        }
+        setFilterError('')
+
+        const payload = { query: q }
+        if (filterCategory !== 'all') payload.category = filterCategory
+        if (filterSender.trim()) payload.from_sender = filterSender.trim()
+        if (filterStartDate) payload.start_date = `${filterStartDate}T00:00:00`
+        if (filterEndDate) payload.end_date = `${filterEndDate}T23:59:59`
+
         setInput('')
         setMessages((m) => [...m, { role: 'user', content: q }])
         setLoading(true)
         try {
-            const { data } = await askRag({ query: q })
+            const { data } = await askRag(payload)
             setMessages((m) => [...m, { role: 'assistant', content: data.answer }])
         } catch (err) {
             setMessages((m) => [
@@ -96,6 +138,89 @@ export default function AskPage() {
                 <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">
                     Ask questions about your emails in plain language.
                 </p>
+
+                <div className="mt-3 flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowFilters((v) => !v)}
+                    >
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                        Filters
+                    </Button>
+                    {(filterCategory !== 'all' || filterSender || filterStartDate || filterEndDate) && (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                                setFilterCategory('all')
+                                setFilterSender('')
+                                setFilterStartDate('')
+                                setFilterEndDate('')
+                                setFilterError('')
+                            }}
+                        >
+                            Clear
+                        </Button>
+                    )}
+                </div>
+
+                {showFilters && (
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        <Select value={filterCategory} onValueChange={setFilterCategory}>
+                            <SelectTrigger id="ask-filter-category">
+                                <SelectValue placeholder="Category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {CATEGORY_OPTIONS.map((opt) => (
+                                    <SelectItem key={opt.value} value={opt.value}>
+                                        {opt.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+
+                        <Input
+                            id="ask-filter-sender"
+                            value={filterSender}
+                            onChange={(e) => setFilterSender(e.target.value)}
+                            placeholder="Sender (email/name)"
+                        />
+
+                        <Input
+                            id="ask-filter-start-date"
+                            type="date"
+                            value={filterStartDate}
+                            onChange={(e) => setFilterStartDate(e.target.value)}
+                        />
+
+                        <Input
+                            id="ask-filter-end-date"
+                            type="date"
+                            value={filterEndDate}
+                            onChange={(e) => setFilterEndDate(e.target.value)}
+                        />
+                    </div>
+                )}
+
+                {filterError && (
+                    <p className="mt-2 text-xs text-[hsl(var(--destructive))]">{filterError}</p>
+                )}
+
+                {activeFilters.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                        {activeFilters.map((chip) => (
+                            <span
+                                key={chip}
+                                className="inline-flex items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] px-2 py-1 text-[11px] text-[hsl(var(--muted-foreground))]"
+                            >
+                                {chip}
+                            </span>
+                        ))}
+                    </div>
+                )}
             </div>
 
             {/* Messages */}

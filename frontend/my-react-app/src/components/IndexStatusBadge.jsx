@@ -2,6 +2,12 @@ import React, { useEffect, useState, useRef } from 'react'
 import { Activity, CheckCircle2 } from 'lucide-react'
 import { getIndexStatus } from '@/lib/api'
 
+function parseAsUtc(isoString) {
+    if (!isoString) return null
+    const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(isoString)
+    return new Date(hasTimezone ? isoString : `${isoString}Z`)
+}
+
 export default function IndexStatusBadge() {
     const [status, setStatus] = useState(null)
     const intervalRef = useRef(null)
@@ -10,13 +16,19 @@ export default function IndexStatusBadge() {
         try {
             const { data } = await getIndexStatus()
             setStatus(data)
-        } catch { }
+        } catch {
+            // Ignore transient polling errors; the next poll will retry.
+            return
+        }
     }
 
     useEffect(() => {
-        poll()
+        const initialPollTimer = setTimeout(poll, 0)
         intervalRef.current = setInterval(poll, 4000)
-        return () => clearInterval(intervalRef.current)
+        return () => {
+            clearTimeout(initialPollTimer)
+            clearInterval(intervalRef.current)
+        }
     }, [])
 
     if (!status) return null
@@ -33,8 +45,9 @@ export default function IndexStatusBadge() {
         )
     }
 
-    const syncedDate = last_synced_at
-        ? new Date(last_synced_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const parsedSyncedAt = last_synced_at ? parseAsUtc(last_synced_at) : null
+    const syncedDate = parsedSyncedAt && !Number.isNaN(parsedSyncedAt.getTime())
+        ? parsedSyncedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         : null
 
     return (

@@ -1,5 +1,5 @@
 from googleapiclient.discovery import build
-from datetime import datetime
+from datetime import datetime, timezone
 
 def get_email_service(credentials):
     return build("gmail", "v1", credentials=credentials)
@@ -11,7 +11,9 @@ def _build_after_query(after_ts: str | None = None) -> str | None:
 
     try:
         # Convert ISO datetime string to Unix timestamp (seconds)
-        dt = datetime.fromisoformat(after_ts.replace("Z", ""))
+        dt = datetime.fromisoformat(after_ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         unix_ts = int(dt.timestamp())
         return f"after:{unix_ts}"
     except Exception as e:
