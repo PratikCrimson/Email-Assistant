@@ -12,12 +12,27 @@ from app.ai.embeddings import embed_text
 from app.db.postgress import SessionLocal
 from sqlalchemy import text
 from app.auth.deps import get_current_user
-from app.rag.service import rag_answer
+from app.rag.service import rag_answer_with_context
+from app.context.service import (
+    create_conversation,
+    delete_conversation,
+    ensure_conversation,
+    get_conversation,
+    get_conversation_messages,
+    get_last_assistant_email_refs,
+    get_recent_messages_for_prompt,
+    list_conversations,
+    maybe_refresh_summary,
+    serialize_conversation,
+    save_message,
+    serialize_message,
+)
 from app.core.security import (
     SESSION_COOKIE_NAME,
     SESSION_TTL_SECONDS,
     create_session_token,
 )
+from app.core.logging import trace_event
 
 router = APIRouter()
 VALID_CATEGORIES = {"job", "finance", "hr", "promotions", "security", "other"}
@@ -212,6 +227,7 @@ def ask_rag(payload: dict, user=Depends(get_current_user)):
     Payload shape:
     {
         "query": "...",                      # required
+        "conversation_id": "uuid-string",    # optional (for follow-ups)
         "start_date": "2024-01-01T00:00:00", # optional ISO-8601
         "end_date": "2024-12-31T23:59:59",   # optional ISO-8601
         "from_sender": "foo@bar.com",        # optional
@@ -224,6 +240,12 @@ def ask_rag(payload: dict, user=Depends(get_current_user)):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid payload",
         )
+    trace_event(
+        "http.ask.in",
+        route="/auth/ask",
+        user_email=user.email,
+        payload=payload,
+    )
     query = payload.get("query")
     if not isinstance(query, str) or not query.strip():
         raise HTTPException(
@@ -241,23 +263,198 @@ def ask_rag(payload: dict, user=Depends(get_current_user)):
     category = _normalize_category(payload.get("category"))
     from_sender = payload.get("from_sender")
     from_sender = from_sender.strip() if isinstance(from_sender, str) else None
+    conversation_id = payload.get("conversation_id")
+    if conversation_id is not None and not isinstance(conversation_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="conversation_id must be a string",
+        )
+    conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else None
+    if conversation_id == "":
+        conversation_id = None
 
+    filter_meta = {
+        "category": category,
+        "from_sender": from_sender,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+    }
+    db = SessionLocal()
+    conversation = None
+    response_conversation_id = None
     try:
-        answer = rag_answer(
+        try:
+            conversation = ensure_conversation(
+                db=db,
+                user_email=user.email,
+                conversation_id=conversation_id,
+            )
+            response_conversation_id = conversation.id
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+
+        recent_messages = get_recent_messages_for_prompt(
+            db=db,
+            conversation_id=conversation.id,
+            user_email=user.email,
+        )
+        prior_email_ids = get_last_assistant_email_refs(
+            db=db,
+            conversation_id=conversation.id,
+            user_email=user.email,
+        )
+        save_message(
+            db=db,
+            conversation=conversation,
+            user_email=user.email,
+            role="user",
+            content=query.strip(),
+            message_meta={"filters": filter_meta},
+        )
+
+        rag_result = rag_answer_with_context(
             user_email=user.email,
             query=query.strip(),
             start_date=start_date,
             end_date=end_date,
             from_sender=from_sender,
             category=category,
+            conversation_summary=conversation.summary or "",
+            recent_messages=recent_messages,
+            prior_email_ids=prior_email_ids,
         )
+        answer = rag_result.get("answer", "").strip() or "I couldn't find this in your emails."
+        save_message(
+            db=db,
+            conversation=conversation,
+            user_email=user.email,
+            role="assistant",
+            content=answer,
+            message_meta={
+                "filters": filter_meta,
+                "retrieved_email_ids": rag_result.get("retrieved_email_ids", []),
+                "rewritten_query": rag_result.get("rewritten_query", query.strip()),
+                "focus_email_id": rag_result.get("focus_email_id"),
+            },
+        )
+        maybe_refresh_summary(db=db, conversation=conversation, user_email=user.email)
+    except HTTPException:
+        db.rollback()
+        trace_event(
+            "http.ask.error",
+            route="/auth/ask",
+            user_email=user.email,
+            conversation_id=response_conversation_id,
+            error="http_exception",
+        )
+        raise
     except Exception as e:
+        db.rollback()
         print(f"❌ ask_rag failed for {user.email}: {e}")
+        trace_event(
+            "http.ask.error",
+            route="/auth/ask",
+            user_email=user.email,
+            conversation_id=response_conversation_id,
+            error=str(e),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ask pipeline failed: {e}",
         )
-    return {"answer": answer}
+    finally:
+        db.close()
+
+    response_payload = {
+        "answer": answer,
+        "conversation_id": response_conversation_id,
+    }
+    trace_event(
+        "http.ask.out",
+        route="/auth/ask",
+        user_email=user.email,
+        response=response_payload,
+    )
+    return response_payload
+
+
+@router.post("/conversations")
+def create_new_conversation(payload: dict | None = None, user=Depends(get_current_user)):
+    title = None
+    if isinstance(payload, dict):
+        candidate = payload.get("title")
+        if isinstance(candidate, str):
+            title = candidate.strip() or None
+
+    db = SessionLocal()
+    try:
+        conversation = create_conversation(db=db, user_email=user.email, title=title)
+        return {
+            "conversation_id": conversation.id,
+            "title": conversation.title,
+            "created_at": conversation.created_at,
+        }
+    finally:
+        db.close()
+
+
+@router.get("/conversations")
+def get_conversations(limit: int = 100, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        rows = list_conversations(db=db, user_email=user.email, limit=limit)
+        return {
+            "conversations": [serialize_conversation(row) for row in rows],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/conversations/{conversation_id}/messages")
+def get_conversation_history(
+    conversation_id: str,
+    limit: int = 200,
+    user=Depends(get_current_user),
+):
+    db = SessionLocal()
+    try:
+        conversation = get_conversation(db=db, user_email=user.email, conversation_id=conversation_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found",
+            )
+        rows = get_conversation_messages(
+            db=db,
+            conversation_id=conversation.id,
+            user_email=user.email,
+            limit=limit,
+        )
+        return {
+            "conversation_id": conversation.id,
+            "summary": conversation.summary or "",
+            "messages": [serialize_message(row) for row in rows],
+        }
+    finally:
+        db.close()
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation_route(conversation_id: str, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        deleted = delete_conversation(db=db, user_email=user.email, conversation_id=conversation_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found",
+            )
+        return {"deleted": True, "conversation_id": conversation_id}
+    finally:
+        db.close()
 
 
 @router.get("/login")

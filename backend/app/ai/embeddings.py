@@ -11,4 +11,4 @@ def get_model():
 
 def embed_text(text : str):
     model = get_model()
-    return model.encode(text).tolist()
+    return model.encode(text, show_progress_bar=False).tolist()

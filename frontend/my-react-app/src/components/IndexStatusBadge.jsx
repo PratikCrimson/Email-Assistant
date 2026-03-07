@@ -10,24 +10,33 @@ function parseAsUtc(isoString) {
 
 export default function IndexStatusBadge() {
     const [status, setStatus] = useState(null)
-    const intervalRef = useRef(null)
+    const timerRef = useRef(null)
 
     const poll = async () => {
         try {
             const { data } = await getIndexStatus()
             setStatus(data)
+            return data
         } catch {
             // Ignore transient polling errors; the next poll will retry.
-            return
+            return null
         }
     }
 
     useEffect(() => {
-        const initialPollTimer = setTimeout(poll, 0)
-        intervalRef.current = setInterval(poll, 4000)
+        let cancelled = false
+
+        const loop = async () => {
+            const data = await poll()
+            if (cancelled) return
+            const nextMs = data?.running ? 4000 : 20000
+            timerRef.current = setTimeout(loop, nextMs)
+        }
+
+        timerRef.current = setTimeout(loop, 0)
         return () => {
-            clearTimeout(initialPollTimer)
-            clearInterval(intervalRef.current)
+            cancelled = true
+            clearTimeout(timerRef.current)
         }
     }, [])
 

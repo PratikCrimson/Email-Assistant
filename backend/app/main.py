@@ -4,9 +4,11 @@ from app.db.postgress import Base
 from app.db.postgress import engine
 from dotenv import load_dotenv  
 from app.ai.embeddings import get_model
+from app.core.logging import configure_logging
 import threading
 from sqlalchemy import text
 load_dotenv()
+configure_logging()
 
 app = FastAPI(title="Email assistant")
 

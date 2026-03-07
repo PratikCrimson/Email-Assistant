@@ -33,4 +33,4 @@ def get_current_user(request: Request):
             )
         return User(email=token_row.user_email)
     finally:
-        db.close()
+        db.close()      

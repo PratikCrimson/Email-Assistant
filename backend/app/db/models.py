@@ -1,4 +1,17 @@
-from sqlalchemy import Column, Integer, Text, TIMESTAMP, UniqueConstraint, DateTime, String, Boolean
+import uuid
+from sqlalchemy import (
+    Column,
+    Integer,
+    Text,
+    TIMESTAMP,
+    UniqueConstraint,
+    DateTime,
+    String,
+    Boolean,
+    ForeignKey,
+    JSON,
+    Index,
+)
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -53,3 +66,39 @@ class UserSyncState(Base):
     has_more = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_email = Column(String, index=True, nullable=False)
+    title = Column(String(255), nullable=True)
+    summary = Column(Text, nullable=True, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_conversations_user_updated_at", "user_email", "updated_at"),
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    user_email = Column(String, index=True, nullable=False)
+    role = Column(String(16), nullable=False)  # user | assistant
+    content = Column(Text, nullable=False)
+    message_meta = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_conversation_messages_conv_created", "conversation_id", "created_at"),
+    )
